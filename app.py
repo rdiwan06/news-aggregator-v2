@@ -61,8 +61,9 @@ def _call_gemini(prompt: str, max_tokens: int) -> str:
 # --- FALLBACK ENGINE ---
 # Providers tried in order. To prefer Gemini first, swap the list.
 PROVIDERS = [
+    ("Gemini 2.5 Flash", lambda p, t: _call_gemini_model('gemini-2.5-flash', p, t)),
+    ("Gemini 2.5 Flash-Lite", lambda p, t: _call_gemini_model('gemini-2.5-flash-lite', p, t)),
     ("Claude (Anthropic)", _call_claude),
-    ("Gemini (Google)", _call_gemini),
 ]
 
 RATE_LIMIT_SIGNALS = ["rate_limit", "rate limit", "quota", "429", "overloaded",
