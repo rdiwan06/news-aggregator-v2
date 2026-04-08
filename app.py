@@ -39,9 +39,8 @@ def fetch_weekly_news(source_ids):
 # --- PROVIDER CALLS ---
 
 def _call_claude(prompt: str, max_tokens: int) -> str:
-    """Call Claude (Anthropic). Raises on rate limit / quota errors."""
     msg = claude_client.messages.create(
-        model="claude-haiku-4-5-20251001",   # cheapest + fastest; swap to claude-sonnet-4-6 for higher quality
+        model="claude-haiku-4-5-20251001",
         max_tokens=max_tokens,
         system="You are a world-class investigative journalist specializing in objective media synthesis.",
         messages=[{"role": "user", "content": prompt}],
@@ -50,7 +49,6 @@ def _call_claude(prompt: str, max_tokens: int) -> str:
 
 
 def _call_gemini(prompt: str, max_tokens: int) -> str:
-    """Call Gemini. Raises on rate limit / quota errors."""
     response = gemini_model.generate_content(
         prompt,
         generation_config={"max_output_tokens": max_tokens}
@@ -58,8 +56,15 @@ def _call_gemini(prompt: str, max_tokens: int) -> str:
     return response.text
 
 
-# --- FALLBACK ENGINE ---
-# Providers tried in order. To prefer Gemini first, swap the list.
+def _call_gemini_model(model_name: str, prompt: str, max_tokens: int) -> str:
+    m = genai.GenerativeModel(model_name)
+    response = m.generate_content(
+        prompt,
+        generation_config={"max_output_tokens": max_tokens}
+    )
+    return response.text
+
+
 PROVIDERS = [
     ("Gemini 2.5 Flash", lambda p, t: _call_gemini_model('gemini-2.5-flash', p, t)),
     ("Gemini 2.5 Flash-Lite", lambda p, t: _call_gemini_model('gemini-2.5-flash-lite', p, t)),
