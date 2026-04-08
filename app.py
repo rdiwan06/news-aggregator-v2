@@ -66,8 +66,8 @@ PROVIDERS = [
 ]
 
 RATE_LIMIT_SIGNALS = ["rate_limit", "rate limit", "quota", "429", "overloaded",
-                       "resource_exhausted", "insufficient_quota", "too many requests"]
-
+                       "resource_exhausted", "insufficient_quota", "too many requests",
+                       "credit balance is too low", "your credit balance"]
 def _is_rate_limit_error(e: Exception) -> bool:
     return any(sig in str(e).lower() for sig in RATE_LIMIT_SIGNALS)
 
