@@ -61,7 +61,7 @@ def generate_digest(articles, format_type):
     REQUIRED FORMAT: {format_instructions[format_type]}
     
     OBJECTIVE: Using the news data below, synthesize a holistic view of the past week. 
-    Ensure you are 100% bipartisan. If sources disagree, present both arguments with equal weight.
+    Ensure you are 100% unbiaseed. If sources disagree, present both arguments with equal weight. Do this by using each sourcee roughly the same number of times.
     
     DATA:
     {raw_data}
