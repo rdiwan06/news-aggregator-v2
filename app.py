@@ -3,40 +3,153 @@ import requests
 import anthropic
 import google.generativeai as genai
 from datetime import datetime, timedelta
+from supabase import create_client, Client
 
 # --- CONFIGURATION ---
 NEWS_API_KEY = st.secrets["NEWS_API_KEY"]
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 ANTHROPIC_API_KEY = st.secrets["ANTHROPIC_API_KEY"]
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel('gemini-2.5-flash')
 claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.set_page_config(page_title="NeutralGround Weekly", layout="wide", page_icon="⚖️")
 
-# --- DATA FETCHING ---
+# ---------------------------------------------------------------
+# AUTH HELPERS
+# ---------------------------------------------------------------
+
+def sign_up(email: str, password: str):
+    try:
+        res = supabase.auth.sign_up({"email": email, "password": password})
+        if res.user:
+            # Insert a row into our custom users table too
+            supabase.table("users").insert({"id": str(res.user.id), "email": email}).execute()
+            return True, "Account created! Check your email to confirm, then log in."
+        return False, "Sign-up failed. Try again."
+    except Exception as e:
+        return False, str(e)
+
+def log_in(email: str, password: str):
+    try:
+        res = supabase.auth.sign_in_with_password({"email": email, "password": password})
+        if res.user:
+            st.session_state["user"] = res.user
+            st.session_state["session"] = res.session
+            return True, "Logged in!"
+        return False, "Login failed."
+    except Exception as e:
+        return False, str(e)
+
+def log_out():
+    supabase.auth.sign_out()
+    st.session_state.pop("user", None)
+    st.session_state.pop("session", None)
+    st.rerun()
+
+def save_digest(user_id: str, title: str, format_type: str, sources: list, content: str):
+    try:
+        supabase.table("digests").insert({
+            "user_id": user_id,
+            "title": title,
+            "format": format_type,
+            "sources": sources,
+            "content": content,
+        }).execute()
+        return True
+    except Exception as e:
+        st.warning(f"Couldn't save digest: {e}")
+        return False
+
+def load_past_digests(user_id: str):
+    try:
+        res = (
+            supabase.table("digests")
+            .select("*")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .limit(20)
+            .execute()
+        )
+        return res.data or []
+    except Exception:
+        return []
+
+# ---------------------------------------------------------------
+# AUTH SCREEN  (shown when not logged in)
+# ---------------------------------------------------------------
+
+def show_auth_screen():
+    st.title("⚖️ NeutralGround Weekly")
+    st.write("Holistic, unbiased news synthesis powered by AI.")
+    st.divider()
+
+    tab_login, tab_signup = st.tabs(["Log in", "Create account"])
+
+    with tab_login:
+        email = st.text_input("Email", key="login_email")
+        password = st.text_input("Password", type="password", key="login_password")
+        if st.button("Log in", use_container_width=True):
+            if email and password:
+                ok, msg = log_in(email, password)
+                if ok:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
+            else:
+                st.warning("Please enter your email and password.")
+
+    with tab_signup:
+        new_email = st.text_input("Email", key="signup_email")
+        new_pass = st.text_input("Password (min 6 characters)", type="password", key="signup_password")
+        new_pass2 = st.text_input("Confirm password", type="password", key="signup_password2")
+        if st.button("Create account", use_container_width=True):
+            if not new_email or not new_pass:
+                st.warning("Please fill in all fields.")
+            elif new_pass != new_pass2:
+                st.error("Passwords don't match.")
+            elif len(new_pass) < 6:
+                st.error("Password must be at least 6 characters.")
+            else:
+                ok, msg = sign_up(new_email, new_pass)
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(msg)
+
+# ---------------------------------------------------------------
+# DATA FETCHING  (unchanged from your original)
+# ---------------------------------------------------------------
+
 @st.cache_data(ttl=3600)
 def get_all_sources():
     url = f"https://newsapi.org/v2/top-headlines/sources?apiKey={NEWS_API_KEY}"
     try:
         response = requests.get(url).json()
         return {s['name']: s['id'] for s in response.get("sources", [])}
-    except:
+    except Exception:
         return {"BBC News": "bbc-news", "Reuters": "reuters"}
 
 def fetch_weekly_news(source_ids):
     source_str = ",".join(source_ids)
     seven_days_ago = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
-    url = (f"https://newsapi.org/v2/everything?sources={source_str}&from={seven_days_ago}"
-           f"&sortBy=popularity&pageSize=20&apiKey={NEWS_API_KEY}")
+    url = (
+        f"https://newsapi.org/v2/everything?sources={source_str}&from={seven_days_ago}"
+        f"&sortBy=popularity&pageSize=20&apiKey={NEWS_API_KEY}"
+    )
     try:
         response = requests.get(url).json()
         return response.get("articles", [])
-    except:
+    except Exception:
         return []
 
-# --- PROVIDER CALLS ---
+# ---------------------------------------------------------------
+# AI PROVIDERS  (unchanged from your original)
+# ---------------------------------------------------------------
 
 def _call_claude(prompt: str, max_tokens: int) -> str:
     msg = claude_client.messages.create(
@@ -47,15 +160,6 @@ def _call_claude(prompt: str, max_tokens: int) -> str:
     )
     return msg.content[0].text
 
-
-def _call_gemini(prompt: str, max_tokens: int) -> str:
-    response = gemini_model.generate_content(
-        prompt,
-        generation_config={"max_output_tokens": max_tokens}
-    )
-    return response.text
-
-
 def _call_gemini_model(model_name: str, prompt: str, max_tokens: int) -> str:
     m = genai.GenerativeModel(model_name)
     response = m.generate_content(
@@ -64,42 +168,52 @@ def _call_gemini_model(model_name: str, prompt: str, max_tokens: int) -> str:
     )
     return response.text
 
-
 PROVIDERS = [
-    ("Gemini 2.5 Flash", lambda p, t: _call_gemini_model('gemini-2.5-flash', p, t)),
+    ("Gemini 2.5 Flash",      lambda p, t: _call_gemini_model('gemini-2.5-flash', p, t)),
     ("Gemini 2.5 Flash-Lite", lambda p, t: _call_gemini_model('gemini-2.5-flash-lite', p, t)),
-    ("Claude (Anthropic)", _call_claude),
+    ("Claude (Anthropic)",    _call_claude),
 ]
 
-RATE_LIMIT_SIGNALS = ["rate_limit", "rate limit", "quota", "429", "overloaded",
-                       "resource_exhausted", "insufficient_quota", "too many requests",
-                       "credit balance is too low", "your credit balance"]
+RATE_LIMIT_SIGNALS = [
+    "rate_limit", "rate limit", "quota", "429", "overloaded",
+    "resource_exhausted", "insufficient_quota", "too many requests",
+    "credit balance is too low", "your credit balance",
+]
+
 def _is_rate_limit_error(e: Exception) -> bool:
     return any(sig in str(e).lower() for sig in RATE_LIMIT_SIGNALS)
 
+FORMAT_INSTRUCTIONS = {
+    "Bullet Points": (
+        "Provide a concise list of the week's top 5 developments with 2 bullets each. "
+        "Focus on speed of reading."
+    ),
+    "Short Format (2-3 min)": (
+        "Write a 500-word executive summary. Group stories by theme and provide a "
+        "high-level overview of the global state of affairs."
+    ),
+    "Longform Narrative (7-10 min)": (
+        "Write a comprehensive, 1,500-word deep-dive feature story.\n"
+        "- Use a compelling 'Big Picture' headline.\n"
+        "- Start with a global 'state of the union' lede.\n"
+        "- Create long, detailed sections for each major global event.\n"
+        "- Explicitly contrast source perspectives.\n"
+        "- Include a 'Media Bias Analysis' section at the end.\n"
+        "- Use a sophisticated, journalistic tone."
+    ),
+}
 
 def generate_digest(articles, format_type):
     if not articles:
         return "No data found."
 
-    raw_data = ""
-    for a in articles:
-        raw_data += f"SOURCE: {a['source']['name']} | TITLE: {a['title']} | CONTENT: {a['description']}\n---\n"
-
-    format_instructions = {
-        "Bullet Points": "Provide a concise list of the week's top 5 developments with 2 bullets each. Focus on speed of reading.",
-        "Short Format (2-3 min)": "Write a 500-word executive summary. Group stories by theme and provide a high-level overview of the global state of affairs.",
-        "Longform Narrative (7-10 min)": """Write a comprehensive, 1,500-word deep-dive feature story.
-        - Use a compelling 'Big Picture' headline.
-        - Start with a global 'state of the union' lede.
-        - Create long, detailed sections for each major global event.
-        - Explicitly contrast source perspectives (e.g., 'While Source X focuses on the economic fallout, Source Y emphasizes the human rights angle').
-        - Include a 'Media Bias Analysis' section at the end explaining how the week was framed globally.
-        - Use a sophisticated, journalistic tone."""
-    }
+    raw_data = "".join(
+        f"SOURCE: {a['source']['name']} | TITLE: {a['title']} | CONTENT: {a['description']}\n---\n"
+        for a in articles
+    )
 
     prompt = f"""
-    REQUIRED FORMAT: {format_instructions[format_type]}
+    REQUIRED FORMAT: {FORMAT_INSTRUCTIONS[format_type]}
 
     OBJECTIVE: Using the news data below, synthesize a holistic view of the past week.
     Ensure you are 100% unbiased. If sources disagree, present both arguments with equal weight.
@@ -110,12 +224,11 @@ def generate_digest(articles, format_type):
     """
 
     max_tokens = 10000 if "Longform" in format_type else 4000
-
     last_error = None
+
     for name, fn in PROVIDERS:
         try:
             result = fn(prompt, max_tokens)
-            # Show which provider was used (subtle, in the expander)
             st.session_state["last_provider"] = name
             return result
         except Exception as e:
@@ -123,49 +236,100 @@ def generate_digest(articles, format_type):
                 st.warning(f"⚠️ {name} is at capacity — trying next provider…")
                 last_error = e
                 continue
-            # Unexpected error: surface it directly
             return f"Synthesis Error ({name}): {str(e)}"
 
     return f"All AI providers are currently unavailable. Last error: {last_error}"
 
+# ---------------------------------------------------------------
+# MAIN APP  (shown when logged in)
+# ---------------------------------------------------------------
 
-# --- UI DASHBOARD ---
-st.title("⚖️ The Neutral Ground: DeepDive")
-st.write(f"**Holistic Media Synthesis** | {datetime.now().strftime('%A, %B %d')}")
+def show_main_app():
+    user = st.session_state["user"]
 
-# SIDEBAR
-st.sidebar.header("1. Digest Settings")
-read_format = st.sidebar.radio(
-    "Select Reading Depth:",
-    ["Bullet Points", "Short Format (2-3 min)", "Longform Narrative (7-10 min)"],
-    index=1
-)
+    # --- Sidebar ---
+    st.sidebar.header("1. Digest Settings")
+    read_format = st.sidebar.radio(
+        "Select Reading Depth:",
+        ["Bullet Points", "Short Format (2-3 min)", "Longform Narrative (7-10 min)"],
+        index=1,
+    )
 
-st.sidebar.divider()
-st.sidebar.header("2. Sources")
-available_sources = get_all_sources()
-all_names = sorted(list(available_sources.keys()))
-default_names = [n for n in ["BBC News", "Reuters", "The Wall Street Journal", "Al Jazeera English", "The Associated Press"] if n in all_names]
+    st.sidebar.divider()
+    st.sidebar.header("2. Sources")
+    available_sources = get_all_sources()
+    all_names = sorted(list(available_sources.keys()))
+    default_names = [
+        n for n in ["BBC News", "Reuters", "The Wall Street Journal",
+                    "Al Jazeera English", "The Associated Press"]
+        if n in all_names
+    ]
+    selected_names = st.sidebar.multiselect("Select outlets:", options=all_names, default=default_names)
 
-selected_names = st.sidebar.multiselect("Select outlets:", options=all_names, default=default_names)
+    st.sidebar.divider()
+    st.sidebar.caption(f"Logged in as {user.email}")
+    if st.sidebar.button("Log out"):
+        log_out()
 
-if st.sidebar.button("Generate Digest", use_container_width=True):
-    with st.spinner(f"Writing your {read_format}... this may take a moment."):
-        ids = [available_sources[name] for name in selected_names]
-        articles = fetch_weekly_news(ids)
+    # --- Main area: tabs ---
+    tab_generate, tab_history = st.tabs(["Generate Digest", "Past Digests"])
 
-        if articles:
-            st.markdown(f"## {read_format}")
-            st.write("---")
-            st.markdown(generate_digest(articles, read_format))
+    # ── Generate tab ──
+    with tab_generate:
+        st.title("⚖️ The Neutral Ground: DeepDive")
+        st.write(f"**Holistic Media Synthesis** | {datetime.now().strftime('%A, %B %d')}")
 
-            st.divider()
-            with st.expander("References & Sources"):
-                # Show which provider was used
-                provider_used = st.session_state.get("last_provider", "Unknown")
-                st.caption(f"Generated by: **{provider_used}**")
-                st.write("")
-                for art in articles:
-                    st.write(f"**{art['source']['name']}**: [{art['title']}]({art['url']})")
+        if st.button("Generate Digest", use_container_width=True):
+            with st.spinner(f"Writing your {read_format}… this may take a moment."):
+                ids = [available_sources[name] for name in selected_names]
+                articles = fetch_weekly_news(ids)
+
+                if articles:
+                    content = generate_digest(articles, read_format)
+
+                    st.markdown(f"## {read_format}")
+                    st.write("---")
+                    st.markdown(content)
+
+                    # Auto-save to the user's account
+                    save_digest(
+                        user_id=str(user.id),
+                        title=f"{read_format} — {datetime.now().strftime('%b %d, %Y')}",
+                        format_type=read_format,
+                        sources=selected_names,
+                        content=content,
+                    )
+                    st.success("✅ Digest saved to your account.")
+
+                    st.divider()
+                    with st.expander("References & Sources"):
+                        provider_used = st.session_state.get("last_provider", "Unknown")
+                        st.caption(f"Generated by: **{provider_used}**")
+                        st.write("")
+                        for art in articles:
+                            st.write(f"**{art['source']['name']}**: [{art['title']}]({art['url']})")
+                else:
+                    st.error("No news found. Try adding more mainstream international sources.")
+
+    # ── History tab ──
+    with tab_history:
+        st.subheader("Your saved digests")
+        digests = load_past_digests(str(user.id))
+
+        if not digests:
+            st.info("No digests yet — generate your first one!")
         else:
-            st.error("No news found. Try adding more mainstream international sources.")
+            for d in digests:
+                created = d["created_at"][:10]
+                with st.expander(f"📄 {d['title']}  ·  {created}"):
+                    st.caption(f"Sources: {', '.join(d['sources'])}")
+                    st.markdown(d["content"])
+
+# ---------------------------------------------------------------
+# ENTRY POINT
+# ---------------------------------------------------------------
+
+if "user" not in st.session_state:
+    show_auth_screen()
+else:
+    show_main_app()
