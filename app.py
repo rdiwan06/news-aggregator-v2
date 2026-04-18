@@ -222,11 +222,3 @@ def show_main_app():
                     st.caption(f"Sources: {', '.join(d['sources'])}")
                     st.markdown(d["content"])
 
-# ---------------------------------------------------------------
-# ENTRY POINT
-# ---------------------------------------------------------------
-
-if "user" not in st.session_state:
-    show_auth_screen()
-else:
-    show_main_app()
