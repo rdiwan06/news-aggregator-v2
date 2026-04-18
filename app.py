@@ -17,7 +17,51 @@ claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.set_page_config(page_title="NeutralGround Weekly", layout="wide", page_icon="⚖️")
+# ---------------------------------------------------------------
+# SUPABASE HELPERS & AUTH
+# ---------------------------------------------------------------
 
+def save_digest(user_id, title, format_type, sources, content):
+    data = {
+        "user_id": user_id,
+        "title": title,
+        "format_type": format_type,
+        "sources": sources,
+        "content": content
+    }
+    # Assumes a table named 'digests' exists in Supabase
+    return supabase.table("digests").insert(data).execute()
+
+def load_past_digests(user_id):
+    try:
+        response = supabase.table("digests").select("*").eq("user_id", user_id).order("created_at", desc=True).execute()
+        return response.data
+    except Exception:
+        return []
+
+def log_out():
+    st.session_state["user"] = None
+    st.rerun()
+
+# ---------------------------------------------------------------
+# AUTHENTICATION GATE (The Missing Link)
+# ---------------------------------------------------------------
+
+if "user" not in st.session_state or st.session_state["user"] is None:
+    st.title("Login to NeutralGround")
+    email = st.text_input("Email")
+    password = st.text_input("Password", type="password")
+    if st.button("Login"):
+        try:
+            # Simple Supabase Auth
+            res = supabase.auth.sign_in_with_password({"email": email, "password": password})
+            st.session_state["user"] = res.user
+            st.rerun()
+        except Exception as e:
+            st.error(f"Login failed: {str(e)}")
+    st.stop() # Prevents the rest of the app from running until logged in
+else:
+    show_main_app()
 # ---------------------------------------------------------------
 # DATA FETCHING  (unchanged from your original)
 # ---------------------------------------------------------------
