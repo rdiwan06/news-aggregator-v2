@@ -5,7 +5,9 @@ import google.generativeai as genai
 from datetime import datetime, timedelta
 from supabase import create_client, Client
 
-# --- CONFIGURATION ---
+# ---------------------------------------------------------------
+# 1. CONFIGURATION & CLIENT INITIALIZATION
+# ---------------------------------------------------------------
 NEWS_API_KEY = st.secrets["NEWS_API_KEY"]
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 ANTHROPIC_API_KEY = st.secrets["ANTHROPIC_API_KEY"]
@@ -17,53 +19,9 @@ claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.set_page_config(page_title="NeutralGround Weekly", layout="wide", page_icon="⚖️")
-# ---------------------------------------------------------------
-# SUPABASE HELPERS & AUTH
-# ---------------------------------------------------------------
-
-def save_digest(user_id, title, format_type, sources, content):
-    data = {
-        "user_id": user_id,
-        "title": title,
-        "format_type": format_type,
-        "sources": sources,
-        "content": content
-    }
-    # Assumes a table named 'digests' exists in Supabase
-    return supabase.table("digests").insert(data).execute()
-
-def load_past_digests(user_id):
-    try:
-        response = supabase.table("digests").select("*").eq("user_id", user_id).order("created_at", desc=True).execute()
-        return response.data
-    except Exception:
-        return []
-
-def log_out():
-    st.session_state["user"] = None
-    st.rerun()
 
 # ---------------------------------------------------------------
-# AUTHENTICATION GATE (The Missing Link)
-# ---------------------------------------------------------------
-
-if "user" not in st.session_state or st.session_state["user"] is None:
-    st.title("Login to NeutralGround")
-    email = st.text_input("Email")
-    password = st.text_input("Password", type="password")
-    if st.button("Login"):
-        try:
-            # Simple Supabase Auth
-            res = supabase.auth.sign_in_with_password({"email": email, "password": password})
-            st.session_state["user"] = res.user
-            st.rerun()
-        except Exception as e:
-            st.error(f"Login failed: {str(e)}")
-    st.stop() # Prevents the rest of the app from running until logged in
-else:
-    show_main_app()
-# ---------------------------------------------------------------
-# DATA FETCHING  (unchanged from your original)
+# 2. DATA FETCHING 
 # ---------------------------------------------------------------
 
 @st.cache_data(ttl=3600)
@@ -89,12 +47,12 @@ def fetch_weekly_news(source_ids):
         return []
 
 # ---------------------------------------------------------------
-# AI PROVIDERS  (unchanged from your original)
+# 3. AI PROVIDER LOGIC
 # ---------------------------------------------------------------
 
 def _call_claude(prompt: str, max_tokens: int) -> str:
     msg = claude_client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model="claude-3-5-sonnet-latest", # Updated to current stable model
         max_tokens=max_tokens,
         system="You are a world-class investigative journalist specializing in objective media synthesis.",
         messages=[{"role": "user", "content": prompt}],
@@ -110,9 +68,9 @@ def _call_gemini_model(model_name: str, prompt: str, max_tokens: int) -> str:
     return response.text
 
 PROVIDERS = [
-    ("Gemini 2.5 Flash",      lambda p, t: _call_gemini_model('gemini-2.5-flash', p, t)),
-    ("Gemini 2.5 Flash-Lite", lambda p, t: _call_gemini_model('gemini-2.5-flash-lite', p, t)),
-    ("Claude (Anthropic)",    _call_claude),
+    ("Gemini Flash",        lambda p, t: _call_gemini_model('gemini-1.5-flash', p, t)),
+    ("Gemini Pro",          lambda p, t: _call_gemini_model('gemini-1.5-pro', p, t)),
+    ("Claude (Anthropic)",  _call_claude),
 ]
 
 RATE_LIMIT_SIGNALS = [
@@ -164,7 +122,7 @@ def generate_digest(articles, format_type):
     {raw_data}
     """
 
-    max_tokens = 10000 if "Longform" in format_type else 4000
+    max_tokens = 4000 if "Longform" in format_type else 2000
     last_error = None
 
     for name, fn in PROVIDERS:
@@ -179,90 +137,4 @@ def generate_digest(articles, format_type):
                 continue
             return f"Synthesis Error ({name}): {str(e)}"
 
-    return f"All AI providers are currently unavailable. Last error: {last_error}"
-
-# ---------------------------------------------------------------
-# MAIN APP  (shown when logged in)
-# ---------------------------------------------------------------
-
-def show_main_app():
-    user = st.session_state["user"]
-
-    # --- Sidebar ---
-    st.sidebar.header("1. Digest Settings")
-    read_format = st.sidebar.radio(
-        "Select Reading Depth:",
-        ["Bullet Points", "Short Format (2-3 min)", "Longform Narrative (7-10 min)"],
-        index=1,
-    )
-
-    st.sidebar.divider()
-    st.sidebar.header("2. Sources")
-    available_sources = get_all_sources()
-    all_names = sorted(list(available_sources.keys()))
-    default_names = [
-        n for n in ["BBC News", "Reuters", "The Wall Street Journal",
-                    "Al Jazeera English", "The Associated Press"]
-        if n in all_names
-    ]
-    selected_names = st.sidebar.multiselect("Select outlets:", options=all_names, default=default_names)
-
-    st.sidebar.divider()
-    st.sidebar.caption(f"Logged in as {user.email}")
-    if st.sidebar.button("Log out"):
-        log_out()
-
-    # --- Main area: tabs ---
-    tab_generate, tab_history = st.tabs(["Generate Digest", "Past Digests"])
-
-    # ── Generate tab ──
-    with tab_generate:
-        st.title("⚖️ The Neutral Ground: DeepDive")
-        st.write(f"**Holistic Media Synthesis** | {datetime.now().strftime('%A, %B %d')}")
-
-        if st.button("Generate Digest", use_container_width=True):
-            with st.spinner(f"Writing your {read_format}… this may take a moment."):
-                ids = [available_sources[name] for name in selected_names]
-                articles = fetch_weekly_news(ids)
-
-                if articles:
-                    content = generate_digest(articles, read_format)
-
-                    st.markdown(f"## {read_format}")
-                    st.write("---")
-                    st.markdown(content)
-
-                    # Auto-save to the user's account
-                    save_digest(
-                        user_id=str(user.id),
-                        title=f"{read_format} — {datetime.now().strftime('%b %d, %Y')}",
-                        format_type=read_format,
-                        sources=selected_names,
-                        content=content,
-                    )
-                    st.success("✅ Digest saved to your account.")
-
-                    st.divider()
-                    with st.expander("References & Sources"):
-                        provider_used = st.session_state.get("last_provider", "Unknown")
-                        st.caption(f"Generated by: **{provider_used}**")
-                        st.write("")
-                        for art in articles:
-                            st.write(f"**{art['source']['name']}**: [{art['title']}]({art['url']})")
-                else:
-                    st.error("No news found. Try adding more mainstream international sources.")
-
-    # ── History tab ──
-    with tab_history:
-        st.subheader("Your saved digests")
-        digests = load_past_digests(str(user.id))
-
-        if not digests:
-            st.info("No digests yet — generate your first one!")
-        else:
-            for d in digests:
-                created = d["created_at"][:10]
-                with st.expander(f"📄 {d['title']}  ·  {created}"):
-                    st.caption(f"Sources: {', '.join(d['sources'])}")
-                    st.markdown(d["content"])
-
+    return f"All AI providers are currently unavailable
